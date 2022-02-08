@@ -34,12 +34,12 @@ public:  // public functions for using main functionality
 public:
     static_assert( ( LOG_D >= 1 ) && ( LOG_D <= 5 ));
     
-    static constexpr int d() { return (1 << LOG_D); }
-    static constexpr int n_buckets() { return (1 << (11 - LOG_D)); }
+    static constexpr int d() { return ( 1 << LOG_D ); }
+    static constexpr int n_buckets() { return ( 1 << ( 11 - LOG_D ) ); }
     static constexpr int precision() { return std::numeric_limits<double>::digits; }
-    static constexpr int eta() { return ((precision() + d() - 2) / 2); }
-    static constexpr int ell() { return (std::numeric_limits<double>::max_exponent - std::numeric_limits<double>::min_exponent + 1 - precision() + eta()) / d() - 1; }
-    static constexpr int kmax2() { return (2 << std::min(precision() - eta() - 1, eta() - d() + 1)); }
+    static constexpr int eta() { return ( ( precision() + d() - 2 ) / 2 ); }
+    static constexpr int ell() { return ( std::numeric_limits<double>::max_exponent - std::numeric_limits<double>::min_exponent + 1 - precision() + eta() ) / d() - 1; }
+    static constexpr int kmax2() { return ( 2 << std::min(precision() - eta() - 1, eta() - d() + 1 ) ); }
     
     // for problem dimension n <= n_flagging_switch() accumulator flagging is applied (only for LOG_D=5)
     static constexpr int n_flagging_switch() { return 160; }
@@ -57,32 +57,42 @@ private:
         unsigned int m_low : 32;
         unsigned int m_high : 20;
         unsigned int exp_low : LOG_D;
-        unsigned int exp_high : (11 - LOG_D);
+        unsigned int exp_high : ( 11 - LOG_D );
         unsigned int sign : 1;
     };
     
     // initialization constants
-    static constexpr std::uint64_t mask_diff()
+    static constexpr std::uint64_t exp_diff()
     {
         uint64double entry0, entry1;
-        entry0.dval = 1.;
-        entry1.dval = static_cast<double>(1LL << d());
-        return (entry1.bm64 - entry0.bm64);
+        entry0.dval = 1.L;
+        entry1.dval = 2.L;
+        return ( entry1.bm64 - entry0.bm64 );
     }
     static constexpr std::uint64_t mask_zero()
     {
         uint64double umask;
-        umask.dval = .75 * static_cast<double>(1LL << (precision() - eta() + d())) * std::numeric_limits<double>::min();
+        umask.dval = .75 * static_cast<double>( 1LL << ( precision() - eta() + d() ) ) * std::numeric_limits<double>::min();
         return umask.bm64;
     }
     
     // initialization entry for bucket i
-    inline double mask_entry(std::uint64_t i)
+    inline double mask_entry( std::uint64_t i )
     {
         uint64double entry;
-        entry.bm64 = i * mask_diff() + mask_zero();
+        entry.bm64 = i * ( d() * exp_diff() ) + mask_zero();
         return entry.dval;
     }
+    
+    inline double acc_thresh_entry( std::uint64_t i )
+    {
+        uint64double entry;
+        entry.bm64 = i * ( d() * exp_diff() ) + ( mask_zero() + exp_diff() * 2 * precision() );
+        return entry.dval;
+    }
+
+    static constexpr int acc_thresh_max_index() { return ( std::numeric_limits<double>::max_exponent - std::numeric_limits<double>::min_exponent + 1 - 3 * precision() + eta() ) / d() - 1; }
+
     
 private:
     // summation variable
@@ -343,6 +353,8 @@ void aaaSum<LOG_D>::AddArray( double *input, int n )
 template<int LOG_D>
 double aaaSum<LOG_D>::IntermediateSum( void )
 {
+    constexpr int m = 1 + ( precision() - eta() - 2 ) / d();
+    
     if ( isFaithful == true )
     {
         for ( int i = ell() + 1; i < n_buckets(); i++ )
@@ -351,20 +363,32 @@ double aaaSum<LOG_D>::IntermediateSum( void )
             isFaithful = ( isFaithful && ( a2[ i ] == mask_entry( i ) ) );
     }
     
+    // search for first non-zero entry
+    int start = ell();
+    while ( ( a1[ start ] == a2[ start ] ) && ( start >~ 0 ) )
+        --start;
+    int itemp = ell();
+    while ( ( e1[ itemp ] == e2[ itemp ] ) && ( itemp >~ start + m ) )
+        --itemp;
+    start = std::max( start, itemp - m );
+    
     // local sum variable
     long double s = _s;
-
+    
     // sum-up of accumulator entries
-    for ( int i = ell() + 1; i; i-- )
+    int i = start;
+    
+    while ( ( i >= 0 ) && ( ( std::abs( s ) < acc_thresh_entry( i ) ) || ( i > acc_thresh_max_index() ) ) )
     {
-        s += ( a1[ i - 1 ] - a2[ i - 1 ] );
-        s += ( e1[ i ] - e2[ i ]);
+        s += ( a1[ i ] - a2[ i ] );
+        s += ( e1[ i + m ] - e2[ i + m ]);
+        --i;
     }
-    s += ( e1[ 0 ] - e2[ 0 ] );
+    for ( int j = i + m; j > i; j-- )
+        s += ( e1[ j ] - e2[ j ] );
 
     return static_cast<double>( s );
 }
-
 
 ////
 // compute sum of values in input array
